@@ -186,3 +186,6 @@ Python package and settings.)
 `.env`, `data/homes.json`, `data/sensors.json`, `data/emails.json`,
 `data/phones.json` and `data/readings.db` hold API keys or personal details.
 They're in `.gitignore`: don't commit them.
+
+Contributors to the project:
+brownkalvin, KP12SIMM, harimistry2008-dot, KeiraL999
