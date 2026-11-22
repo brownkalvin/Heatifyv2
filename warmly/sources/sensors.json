@@ -1,0 +1,4 @@
+[
+  {"id": "EXAMPLE-switchbot-mac-address", "type": "switchbot", "home_id": "margaret", "room": "living"},
+  {"id": "EXAMPLE-esp32-device-id", "type": "esp32", "home_id": "margaret", "room": "bedroom"}
+]

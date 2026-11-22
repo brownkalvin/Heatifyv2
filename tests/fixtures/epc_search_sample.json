@@ -1,0 +1,72 @@
+{
+  "data": [
+    {
+      "certificateNumber": "0000-0000-0000-0000-0001",
+      "addressLine1": "1, Example Road",
+      "addressLine2": null,
+      "addressLine3": null,
+      "addressLine4": null,
+      "postcode": "AB1 2CD",
+      "postTown": "EXAMPLETOWN",
+      "council": "Example",
+      "constituency": "Example",
+      "currentEnergyEfficiencyBand": "D",
+      "registrationDate": "2010-10-13",
+      "uprn": 101,
+      "schemaType": "SAP-Schema-14.2"
+    },
+    {
+      "certificateNumber": "0000-0000-0000-0000-0009",
+      "addressLine1": "1, Example Road",
+      "addressLine2": null,
+      "addressLine3": null,
+      "addressLine4": null,
+      "postcode": "AB1 2CD",
+      "postTown": "EXAMPLETOWN",
+      "council": "Example",
+      "constituency": "Example",
+      "currentEnergyEfficiencyBand": "E",
+      "registrationDate": "2008-05-01",
+      "uprn": 101,
+      "schemaType": "SAP-Schema-14.2"
+    },
+    {
+      "certificateNumber": "0000-0000-0000-0000-0011",
+      "addressLine1": "11, Example Road",
+      "addressLine2": null,
+      "addressLine3": null,
+      "addressLine4": null,
+      "postcode": "AB1 2CD",
+      "postTown": "EXAMPLETOWN",
+      "council": "Example",
+      "constituency": "Example",
+      "currentEnergyEfficiencyBand": "C",
+      "registrationDate": "2019-02-02",
+      "uprn": 111,
+      "schemaType": "SAP-Schema-14.2"
+    },
+    {
+      "certificateNumber": "0000-0000-0000-0000-0002",
+      "addressLine1": "2, Example Road",
+      "addressLine2": null,
+      "addressLine3": null,
+      "addressLine4": null,
+      "postcode": "AB1 2CD",
+      "postTown": "EXAMPLETOWN",
+      "council": "Example",
+      "constituency": "Example",
+      "currentEnergyEfficiencyBand": "D",
+      "registrationDate": "2015-07-07",
+      "uprn": 102,
+      "schemaType": "SAP-Schema-14.2"
+    }
+  ],
+  "pagination": {
+    "totalRecords": 4,
+    "currentPage": 1,
+    "totalPages": 1,
+    "nextPage": null,
+    "prevPage": null,
+    "pageSize": 25
+  }
+}

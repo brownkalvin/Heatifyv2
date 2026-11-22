@@ -1,0 +1,5 @@
+requests
+pytest
+flask
+# Optional, only for: python scripts/run_demo_night.py --plot
+matplotlib

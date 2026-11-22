@@ -1,0 +1,9 @@
+data/forecast_cache.json
+__pycache__/
+.pytest_cache/
+.env
+data/cold_night.json
+data/phones.json
+data/homes.json
+data/sensors.json
+data/readings.db
