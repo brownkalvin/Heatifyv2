@@ -142,6 +142,7 @@ def test_real_reading_reaches_dashboard(live):
     rooms = {r["room"]: r for r in home["rooms"]}
     assert rooms["bedroom"]["temp_c"] == 17.2 and rooms["bedroom"]["colour"] == "amber"
     assert rooms["living"]["colour"] == "grey"                    # no living-room sensor
+    assert "estimate" not in home["status_text"]                   # the bedroom has a reading
     assert server.PHONE_TO_HOME == {"+447700900009": "sam"}
     assert state.convo["sam"].relationship_word == "Dad"
 
@@ -198,3 +199,14 @@ def test_signup_lookup_needs_consent(live, monkeypatch):
                                                     "address_line": "1 Example Road"}).get_json()
     assert len(found["candidates"]) == 2
     assert [c["certificate_number"] for c in found["matching"]] == ["c1"]
+
+
+def test_status_says_estimate_without_bedroom_sensor(live):
+    client, _, _ = live
+    client.post("/api/homes", json={**SIGN_UP, "sensors": [{"id": "esp-9", "type": "esp32",
+                                                             "room": "living"}]})
+    client.post("/api/reading", json={"sensor_id": "esp-9", "temp_c": 19.5,
+                                      "ts": at(22, 19, 50).isoformat()})
+    home = client.get("/api/dashboard").get_json()["homes"][0]
+    assert home["tonight"]["assumed_start"] is True
+    assert home["status_text"].endswith("(estimate: no bedroom reading)")

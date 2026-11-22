@@ -275,8 +275,9 @@ def _status_text(rooms: dict[Room, RoomState], tonight_pred: OvernightPrediction
         # (a living-room crossing after bedtime doesn't matter: nobody's in it)
         return f"Below 18°C at ~{room.crosses_18_at:%H:%M} if heating stays off"
     if tonight_pred.will_breach_18 and rooms["bedroom"].heating_on is not True:
+        estimate = " (estimate: no bedroom reading)" if tonight_pred.assumed_start else ""
         return (f"Bedroom could drop to about {display_temp(tonight_pred.predicted_min_c)}°C "
-                f"overnight if heating stays off")
+                f"overnight if heating stays off{estimate}")
     return f"{name.capitalize()} warm"
 
 
