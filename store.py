@@ -35,7 +35,7 @@ class HomeRecord:
 
 
 # Contact settings kept on the record. Phone numbers live in data/phones.json
-# (server.PHONES), next to the Twilio code.
+# (server.PHONES); nothing sends texts at the moment.
 SETTINGS_FIELDS = ("contact_name", "relationship_word", "night_alerts_opted_in")
 
 

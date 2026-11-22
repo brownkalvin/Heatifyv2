@@ -1,4 +1,4 @@
-"""Run the demo night and print what Warmly would see, predict and send.
+"""Run the demo night and print what Heatify would see, predict and send.
 
 Uses ONLY warmly.model.api, as a proof that the contract is enough.
 

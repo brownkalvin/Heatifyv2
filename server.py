@@ -1,4 +1,4 @@
-"""Warmly's HTTP API for the React app (design doc §4.13).
+"""Heatify's HTTP API for the React app (design doc §4.13).
 
     python server.py                            # demo: live forecast; last winter's coldest night if mild
     WARMLY_FORECAST=offline python server.py    # demo on the hard-coded cold night
@@ -6,7 +6,7 @@
     WARMLY_MODE=live python server.py           # real homes, real sensors, real time
 
 Two modes:
-- demo: the six synthetic homes on a fast clock (720x) that pauses for replies.
+- demo: the seven synthetic homes on a fast clock (720x) that pauses for replies.
 - live: the homes signed up through POST /api/homes, their thermometers'
   readings from SQLite (posted to /api/reading), and the real time.
 
@@ -29,8 +29,9 @@ from pathlib import Path
 import requests
 from flask import Flask, Response, jsonify, request
 
+import family
 import store
-from warmly.model import api
+from warmly.model import api, synthetic
 from warmly.model.epc_lookup import matches, search_epc
 from warmly.sources import RealClock, StoredSource
 from warmly.sources.stored_source import CREATE_TABLE
@@ -38,20 +39,29 @@ from warmly.sources.stored_source import CREATE_TABLE
 ALLOWED_ORIGINS = {"http://localhost:5173", "http://localhost:3000"}   # Vite, create-react-app
 TICK_S = 0.5                       # the tick loop wakes this often (real seconds)
 DB_PATH = Path(__file__).resolve().parent / "data" / "readings.db"
+# The demo clock used to stop for every message to the person until they
+# replied. Now it keeps going; the reply box stays open while one is unanswered.
+PAUSE_FOR_MESSAGES = False
 MILD_NIGHT_C = 2.0                 # a live forecast whose low is above this isn't worth demoing
 FORECAST_REFRESH_S = 3600          # live mode refetches the forecast hourly
 LEARN_AT = time(7, 0)              # live mode learns from last night every morning from 07:00
 
 ENV_FILE = Path(__file__).resolve().parent / ".env"
+WEB_DIR = Path(__file__).resolve().parent / "web"     # the family app
 # Real phone numbers per home (gitignored): {"margaret": {"person": "+44...", "contact": "+44..."}}
 PHONES_FILE = Path(__file__).resolve().parent / "data" / "phones.json"
-TWILIO_URL = "https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
-TWILIO_KEYS = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM")
 
 # home_id -> {"person": number, "contact": number}. Loaded from PHONES_FILE at startup.
 PHONES: dict[str, dict[str, str]] = {}
-# The person's number -> home_id, so a real SMS reply finds its home (/sms/reply).
+# The person's number -> home_id (kept for when texts come back).
 PHONE_TO_HOME: dict[str, str] = {}
+
+# Email addresses per home (gitignored), same shape: {"margaret": {"person": "...", "contact": "..."}}
+EMAILS_FILE = Path(__file__).resolve().parent / "data" / "emails.json"
+EMAILS: dict[str, dict[str, str]] = {}
+RESEND_URL = "https://api.resend.com/emails"
+# Resend's test sender: works with no domain set up, but only delivers to your Resend account's email
+RESEND_DEFAULT_FROM = "Heatify <onboarding@resend.dev>"
 
 log = logging.getLogger("warmly.server")
 
@@ -99,33 +109,74 @@ def set_phones(home_id: str, person: str | None = None, contact: str | None = No
     return numbers
 
 
-def send_sms(message: api.OutgoingMessage) -> None:
-    """Send a message by SMS if Twilio is set up and the home has a number for
-    message.to; otherwise do nothing (the message is still in the on-screen
-    log, so the demo works without it). Sends on a background thread, so a
-    slow Twilio never holds up the tick loop."""
-    if not all(os.environ.get(k) for k in TWILIO_KEYS):
+def load_emails(path: Path = EMAILS_FILE) -> None:
+    """Fill EMAILS from data/emails.json, if it exists."""
+    try:
+        emails = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return
-    to_number = PHONES.get(message.home_id, {}).get(message.to)
-    if not to_number:
-        log.info("No %s number for %s; not texting %s", message.to, message.home_id,
+    EMAILS.clear()
+    EMAILS.update(emails)
+
+
+def check_email(address: str) -> str:
+    """The address, trimmed, or ValueError if it can't be an email address.
+    Only a sanity check (one @, a dot after it, no spaces): Resend has the last word."""
+    address = address.strip()
+    local, at, domain = address.partition("@")
+    if not (local and at and "." in domain.strip(".") and "@" not in domain
+            and not any(c.isspace() for c in address)):
+        raise ValueError(f"{address!r} doesn't look like an email address")
+    return address
+
+
+def set_emails(home_id: str, person: str | None = None, contact: str | None = None,
+               path: Path | None = None) -> dict[str, str]:
+    """Change a home's email addresses (from sign-up or settings) and save
+    emails.json. "" removes an address; None leaves it as it is."""
+    addresses = EMAILS.setdefault(home_id, {})
+    for who, value in (("person", person), ("contact", contact)):
+        if value is None:
+            continue
+        if value.strip():
+            addresses[who] = check_email(value)
+        else:
+            addresses.pop(who, None)
+    path = path or EMAILS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(EMAILS, indent=2), encoding="utf-8")
+    return dict(addresses)
+
+
+def send_email(message: api.OutgoingMessage) -> None:
+    """Send a message by email via Resend if RESEND_API_KEY is set and the home
+    has an address for message.to; otherwise do nothing. Sends on a background thread,
+    so a slow Resend never holds up the tick loop."""
+    if not os.environ.get("RESEND_API_KEY"):
+        return
+    to_address = EMAILS.get(message.home_id, {}).get(message.to)
+    if not to_address:
+        log.info("No %s email for %s; not emailing %s", message.to, message.home_id,
                  message.template_id)
         return
-    threading.Thread(target=_post_to_twilio, args=(to_number, message.text), daemon=True).start()
+    name = message.home_id.capitalize()
+    subject = (f"Heatify: checking in, {name}" if message.to == "person"
+               else f"Heatify: an update about {name}")
+    threading.Thread(target=_post_to_resend, args=(to_address, subject, message.text),
+                     daemon=True).start()
 
 
-def _post_to_twilio(to_number: str, text: str) -> None:
-    sid = os.environ["TWILIO_ACCOUNT_SID"]
+def _post_to_resend(to_address: str, subject: str, text: str) -> None:
     try:
-        response = requests.post(TWILIO_URL.format(sid=sid),
-                                 auth=(sid, os.environ["TWILIO_AUTH_TOKEN"]),
-                                 data={"To": to_number, "From": os.environ["TWILIO_FROM"],
-                                       "Body": text},
+        response = requests.post(RESEND_URL,
+                                 headers={"Authorization": f"Bearer {os.environ['RESEND_API_KEY']}"},
+                                 json={"from": os.environ.get("RESEND_FROM") or RESEND_DEFAULT_FROM,
+                                       "to": [to_address], "subject": subject, "text": text},
                                  timeout=10)
         if response.status_code >= 400:
-            log.error("Twilio refused the SMS (%s): %s", response.status_code, response.text)
+            log.error("Resend refused the email (%s): %s", response.status_code, response.text)
     except requests.RequestException:
-        log.exception("Couldn't reach Twilio")
+        log.exception("Couldn't reach Resend")
 
 
 def choose_forecast(mode: str) -> tuple[list, str, object]:
@@ -164,7 +215,8 @@ class WarmlyServer:
         self.refresh_forecast = refresh_forecast and mode == "live"
         self.last_forecast_fetch = real_time.monotonic()
         self.lock = threading.RLock()
-        self.settings: dict[str, dict] = {}       # demo homes' contact settings, kept across reset
+        # Demo homes' contact settings, kept across reset; some start with settings
+        self.settings: dict[str, dict] = {k: dict(v) for k, v in synthetic.DEMO_SETTINGS.items()}
         self.reset()
 
     @property
@@ -258,19 +310,21 @@ class WarmlyServer:
         self.last_learned = now.date()
 
     def send(self, message: api.OutgoingMessage, now: datetime) -> None:
-        """Log it, send it by SMS if Twilio is set up, and pause for person-facing ones."""
+        """Log it and email it via Resend if set up. (With PAUSE_FOR_MESSAGES the
+        demo clock also stops for person-facing ones.)"""
         api.record_sent(self.convo[message.home_id], message, now)
         self.outgoing.append(message)
         self.log[message.home_id].append({"at": now, "to": message.to,
                                           "template_id": message.template_id,
-                                          "text": message.text, "direction": "out"})
-        send_sms(message)
-        if message.to == "person" and self.mode == "demo":
+                                          "text": message.text, "direction": "out",
+                                          "reason": message.reason})
+        send_email(message)
+        if message.to == "person" and self.mode == "demo" and PAUSE_FOR_MESSAGES:
             self.clock.pause_for_message()
             self.paused_for_message = True
 
     def reply(self, home_id: str, text: str) -> None:
-        """A reply from the person (on-screen phone or real SMS). Resumes the clock."""
+        """A reply from the person (the on-screen phone). Resumes the clock."""
         with self.lock:
             now = self.now()
             convo = self.convo[home_id]
@@ -319,10 +373,14 @@ class WarmlyServer:
     # ---- sign-up and settings ----------------------------------------------- #
     def sign_up(self, body: dict) -> dict:
         """Create a home from the sign-up form. Raises ValueError on bad input.
-        Saved to data/homes.json, data/sensors.json and data/phones.json; in
+        Saved to data/homes.json, data/sensors.json, data/phones.json and
+        data/emails.json; in
         live mode the home appears on the dashboard straight away."""
         form_fields = {f.name for f in fields(api.SignUp)}
         form = api.SignUp(**{k: v for k, v in body.items() if k in form_fields})
+        for key in ("person_email", "contact_email"):
+            if (body.get(key) or "").strip():
+                check_email(body[key])          # before anything is saved
         with self.lock:
             result = api.sign_up(form, self.now().date())
             taken = set(self.records) | {h.home_id for h in self.homes}
@@ -347,6 +405,9 @@ class WarmlyServer:
             if body.get("person_phone") or body.get("contact_phone"):
                 set_phones(home_id, body.get("person_phone"), body.get("contact_phone"),
                            self.data_dir / "phones.json")
+            if body.get("person_email") or body.get("contact_email"):
+                set_emails(home_id, body.get("person_email"), body.get("contact_email"),
+                           self.data_dir / "emails.json")
             if self.mode == "live":
                 self.reset()
             return {"home_id": home_id, "rating_from": result.rating_from,
@@ -355,7 +416,11 @@ class WarmlyServer:
                     "live": self.mode == "live", "record": asdict(record)}
 
     def update_settings(self, home_id: str, body: dict) -> dict:
-        """Contact name, relationship word, the night-alert opt-in and phone numbers."""
+        """Contact name, relationship word, the night-alert opt-in, phone
+        numbers and email addresses. Raises ValueError for a bad email address."""
+        for key in ("person_email", "contact_email"):
+            if (body.get(key) or "").strip():
+                check_email(body[key])          # before anything is saved
         values = {k: body[k] for k in store.SETTINGS_FIELDS if k in body}
         if "night_alerts_opted_in" in values:
             values["night_alerts_opted_in"] = bool(values["night_alerts_opted_in"])
@@ -371,10 +436,14 @@ class WarmlyServer:
             if "person_phone" in body or "contact_phone" in body:
                 set_phones(home_id, body.get("person_phone"), body.get("contact_phone"),
                            self.data_dir / "phones.json")
+            if "person_email" in body or "contact_email" in body:
+                set_emails(home_id, body.get("person_email"), body.get("contact_email"),
+                           self.data_dir / "emails.json")
             if home_id in self.convo:
                 self.apply_settings(home_id)
             return {**{k: current.get(k) for k in store.SETTINGS_FIELDS},
-                    "phones": dict(PHONES.get(home_id, {}))}
+                    "phones": dict(PHONES.get(home_id, {})),
+                    "emails": dict(EMAILS.get(home_id, {}))}
 
 
 DemoServer = WarmlyServer   # the original name
@@ -410,8 +479,73 @@ def build_server_from_env() -> WarmlyServer:
 def create_app(server: WarmlyServer | None = None, ticker: bool = True) -> Flask:
     """The Flask app. Tests pass their own WarmlyServer and ticker=False."""
     server = server or build_server_from_env()
-    app = Flask(__name__)
+    # The family app (web/) is served from here too: open http://localhost:5000
+    app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="")
     app.config["warmly"] = server
+
+    @app.get("/")
+    def index():
+        return app.send_static_file("index.html")
+
+    # ---- the family app's three endpoints (family.py, web/UI_SPEC.md §5) ---- #
+    def family_home(home_id: str):
+        home = server.home(home_id)
+        return home, (None if home else bad(f"no home {home_id!r}", 404))
+
+    @app.get("/api/family/homes")
+    def family_homes():
+        """The homes the app can switch between (the demo's tabs): id, name, story."""
+        with server.lock:
+            return jsonify({"mode": server.mode,
+                            "homes": [{"home_id": h.home_id, "name": h.name, "story": h.story}
+                                      for h in server.homes]})
+
+    @app.get("/api/family/<home_id>/readings")
+    def family_readings(home_id: str):
+        with server.lock:
+            home, error = family_home(home_id)
+            return error or jsonify(family.readings(home, server.now(), server.source))
+
+    @app.get("/api/family/<home_id>/live-status")
+    def family_live_status(home_id: str):
+        with server.lock:
+            home, error = family_home(home_id)
+            return error or jsonify(family.live_status(home, server.now(), server.source,
+                                                       server.forecast))
+
+    @app.get("/api/family/<home_id>/forecast")
+    def family_forecast(home_id: str):
+        with server.lock:
+            home, error = family_home(home_id)
+            return error or jsonify(family.week_forecast(home, server.now(), server.source,
+                                                         server.forecast))
+
+    @app.get("/api/family/<home_id>/demo")
+    def family_demo(home_id: str):
+        """The server clock, the home's last message to or from the person (for
+        the reply box), and the demo's notes: what's happened so far tonight."""
+        with server.lock:
+            home, error = family_home(home_id)
+            if error:
+                return error
+            person = [m for m in server.log[home_id] if m["to"] == "person"]
+            return jsonify({"mode": server.mode, "name": home.name, **clock_json(),
+                            "awaiting_reply": server.convo[home_id].awaiting_reply,
+                            "last_message": api.to_jsonable(person[-1] if person else None),
+                            "notes": api.to_jsonable(demo_notes(home_id))})
+
+    def demo_notes(home_id: str) -> list[dict]:
+        """What's happened in this home so far: the demo's story beats and every
+        message Heatify sent or got, oldest first. Beats only in demo mode."""
+        now = server.now()
+        beats = server.demo.beats.get(home_id, []) if server.demo else []
+        notes = [{"at": when, "kind": "event", "text": text} for when, text in beats if when <= now]
+        for m in server.log[home_id]:
+            kind = ("reply" if m["direction"] == "in"
+                    else "person" if m["to"] == "person" else "family")
+            notes.append({"at": m["at"], "kind": kind, "text": m["text"],
+                          "reason": m.get("reason", "")})
+        return sorted(notes, key=lambda n: n["at"])          # stable: beats before messages
 
     @app.after_request
     def cors(response: Response) -> Response:
@@ -462,7 +596,10 @@ def create_app(server: WarmlyServer | None = None, ticker: bool = True) -> Flask
     def settings(home_id: str):
         if server.home(home_id) is None and home_id not in server.records:
             return bad(f"no home {home_id!r}", 404)
-        return jsonify(server.update_settings(home_id, request.get_json(silent=True) or {}))
+        try:
+            return jsonify(server.update_settings(home_id, request.get_json(silent=True) or {}))
+        except ValueError as error:
+            return bad(str(error))
 
     @app.post("/api/signup/lookup")
     def signup_lookup():
@@ -504,13 +641,6 @@ def create_app(server: WarmlyServer | None = None, ticker: bool = True) -> Flask
         with server.lock:
             return jsonify({"home_id": home_id, "messages": api.to_jsonable(server.log[home_id])})
 
-    @app.post("/sms/reply")
-    def sms_reply():
-        home_id = PHONE_TO_HOME.get(request.form.get("From", ""))
-        if home_id and server.home(home_id):
-            server.reply(home_id, request.form.get("Body", ""))
-        return Response('<?xml version="1.0" encoding="UTF-8"?><Response/>', mimetype="text/xml")
-
     @app.post("/api/reading")
     def reading():
         """An ESP32 (or the SwitchBot laptop gateway) posts {"sensor_id", "temp_c", "ts"}."""
@@ -544,5 +674,6 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     load_env_file()
     load_phones()
+    load_emails()
     # debug=False: the reloader would start a second tick loop
-    create_app().run(port=5000, threaded=True, debug=False)
+    create_app().run(port=int(os.environ.get("PORT", 5000)), threaded=True, debug=False)

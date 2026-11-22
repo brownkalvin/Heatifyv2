@@ -1,5 +1,5 @@
 import random
-from datetime import date, time
+from datetime import date, time, timedelta
 
 import pytest
 
@@ -79,6 +79,23 @@ def test_demo_homes():
     assert on("ray", "living", at(22, 21)) is None         # sensor offline
 
 
+def test_heating_back_on_after_cooling():
+    """A room that cooled to 16°C and then had its heating turned on (a V in
+    the 90-minute window) reads as ON from the first clear rise, and stays ON
+    while it holds at the setpoint, even with the clock a moment past the
+    quarter-hour."""
+    forecast = constant_forecast(0.0, at(22, 16))
+    cooled = simulate(16.6, at(22, 21), at(22, 22, 30), PARAMS, [], forecast)
+    warmed = simulate(cooled[-1][1], at(22, 22, 30), at(22, 23, 59), RoomParams(45, 40, 3.0, 300),
+                      [HeatingWindow(time(22, 30), time(23, 59), 18.5)], forecast)
+    readings = _noisy(cooled + warmed[1:], 3)
+    moment = timedelta(milliseconds=5)
+    assert infer_heating(readings, forecast, PARAMS, at(22, 22, 30) + moment).heating_on is not True
+    for minute in (0, 15, 30, 45):
+        now = at(22, 23, minute) + moment
+        assert infer_heating(readings, forecast, PARAMS, now).heating_on is True, now
+
+
 def test_label_night_and_habit():
     homes, forecast, curves = _demo()
 
@@ -86,7 +103,8 @@ def test_label_night_and_habit():
         return label_night(curves[(home_id, "bedroom")], forecast,
                            homes[home_id].rooms["bedroom"], NIGHT)
 
-    assert label("margaret") == "pure_cooling"
+    assert label("margaret") == "heating_on_overnight"   # turned back on at 16°C
+    assert label("eileen") == "pure_cooling"
     assert label("frank") == "heating_on_overnight"
     assert label("joan") == "heating_on_overnight"   # until the boiler failed
     assert label("ray") == "unknown"

@@ -1,4 +1,4 @@
-"""Data types shared by every Warmly module.
+"""Data types shared by every Heatify module.
 
 The results that the prediction, inference, rules and cost functions return
 live here too, so there's one place to look.

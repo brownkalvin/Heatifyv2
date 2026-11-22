@@ -14,14 +14,14 @@ from .cost import format_pence
 
 TEMPLATES: dict[str, str] = {
     "daytime_checkin": (
-        "Hi {name}, it's Warmly. Your living room is {temp}°C and it's going down to "
+        "Hi {name}, it's Heatify. Your living room is {temp}°C and it's going down to "
         "{out_low}°C tonight. Is your heating on? Reply 1 for yes, 2 for no."),
     "daytime_checkin_predicted": (
-        "Hi {name}, it's Warmly. It's going down to {out_low}°C tonight, so your living "
+        "Hi {name}, it's Heatify. It's going down to {out_low}°C tonight, so your living "
         "room will drop below 18°C by about {cross_time} if the heating stays off. "
         "Is your heating on? Reply 1 for yes, 2 for no."),
     "checkin_reminder": (
-        "Hi {name}, it's Warmly again. Just checking you're OK. Reply 1 if you're fine, "
+        "Hi {name}, it's Heatify again. Just checking you're OK. Reply 1 if you're fine, "
         "or 2 if you'd like a call."),
     "cost_followup": (
         "That's your choice, {name}. Just so you know: heating only your living room until "
@@ -29,12 +29,12 @@ TEMPLATES: dict[str, str] = {
         "{fan_cost}. An electric blanket is about {blanket} an hour. Would you like help "
         "checking for money off your bills? Reply HELP."),
     "bedtime": (
-        "Hi {name}, it's Warmly. It's going down to {out_low}°C tonight. If your heating "
+        "Hi {name}, it's Heatify. It's going down to {out_low}°C tonight. If your heating "
         "stays off, your bedroom will probably drop to about {pred_min}°C by morning. "
         "Keeping it at 18°C overnight would cost about {hold_cost}. Or warm it for an hour "
         "before bed (about {warm_cost}) and use an electric blanket."),
     "bedtime_estimate": (
-        "Hi {name}, it's Warmly. We haven't had a reading from your bedroom, so this is "
+        "Hi {name}, it's Heatify. We haven't had a reading from your bedroom, so this is "
         "an estimate: it's going down to {out_low}°C tonight, and if your heating stays "
         "off your bedroom could drop to about {pred_min}°C by morning."),
     "bedtime_declined": (
@@ -46,6 +46,10 @@ TEMPLATES: dict[str, str] = {
     "family_evening": (
         "{name}'s living room is {temp}°C. {reason} Nothing urgent, but a call tonight "
         "might help. Heating one room costs about {room_cost} tonight."),
+    "family_heads_up": (
+        "Heads-up: if {name}'s heating stays off, their {room} will drop below 16°C by "
+        "about {cross_time}. Overnight their bedroom could get down to about {pred_min}°C. "
+        "Could you call them, or go round and put the heating on?"),
     "family_night": (
         "{name}'s bedroom is {temp}°C tonight, which is very cold. You asked us to tell you "
         "at night. Please call them or ask a neighbour to check on them."),
@@ -54,7 +58,7 @@ TEMPLATES: dict[str, str] = {
         "Please call them or ask a neighbour to check on them. If you think they're in "
         "danger, call 999."),
     "family_weekly": "{summary}. They've answered {answered} of {asked} check-ins.",
-    "family_weekly_quiet": "{summary}. Warmly didn't need to check in with them this week.",
+    "family_weekly_quiet": "{summary}. Heatify didn't need to check in with them this week.",
     "no_reading": (
         "We haven't had a reading from {name}'s {thermometers} since {last_seen}. "
         "Could you check it's switched on and near the room's centre?"),
@@ -68,7 +72,7 @@ AUDIENCE: dict[str, str] = {
     "daytime_checkin": "person", "daytime_checkin_predicted": "person",
     "checkin_reminder": "person", "cost_followup": "person", "bedtime": "person",
     "bedtime_estimate": "person", "bedtime_declined": "person", "morning": "person",
-    "family_evening": "contact", "family_night": "contact", "family_urgent": "contact",
+    "family_evening": "contact", "family_heads_up": "contact", "family_night": "contact", "family_urgent": "contact",
     "family_weekly": "contact", "family_weekly_quiet": "contact", "no_reading": "contact",
     "sensor_placement": "signup",
 }

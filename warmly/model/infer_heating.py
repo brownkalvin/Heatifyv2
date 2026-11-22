@@ -12,6 +12,15 @@ error `se` (never below 0.05°C/h), then:
   (the room is cooling less than half as fast as free cooling predicts)
 - otherwise OFF
 
+Before that, a quicker check: if the room is warmer than outside, is
+RISE_MIN_C (0.5°C) or more above its lowest reading of the last 90 minutes,
+and hasn't fallen in the last 30, the heating is ON. An unheated room can't
+warm up on a cold night, and 0.5°C is about 4 times the noise between two
+readings. "Hasn't fallen" keeps it on while the room holds at its setpoint
+after warming up. Without it, a room that cooled and
+then warmed (the heating coming back on) is a V in the 90-minute window:
+the straight-line fit is too unsure to tell for about an hour.
+
 Why not a fixed "residual > 0.3°C/h": a radiator HOLDING a flat steady only
 shows a residual of about 0.25°C/h (Joan), so the fixed rule called it off.
 This rule scales with how fast the room should be cooling and with the noise.
@@ -26,8 +35,11 @@ from datetime import date, datetime, timedelta
 
 from .forecast import temp_at
 from .homes import (INFER_MIN_READINGS, INFER_WINDOW_MIN, LONDON, NIGHT_WINDOW,
-                    SLOPE_MIN_READINGS, SLOPE_SE_FLOOR, SLOPE_WINDOW_MIN)
+                    RISE_MIN_C, RISE_WINDOW_MIN, SLOPE_MIN_READINGS, SLOPE_SE_FLOOR,
+                    SLOPE_WINDOW_MIN)
 from .types import ForecastPoint, HeatingInference, Reading, RoomParams
+
+NOT_FALLING_SLACK_C = 0.1     # "hasn't fallen" allows for one step of noise or rounding
 
 
 def _window(readings: list[Reading], now: datetime, window_min: float) -> list[Reading]:
@@ -59,10 +71,36 @@ def slope_c_per_h(readings: list[Reading], now: datetime,
     return slope, standard_error
 
 
+def clear_rise(readings: list[Reading], forecast: list[ForecastPoint],
+               params: RoomParams, now: datetime) -> HeatingInference | None:
+    """Heating ON if, while it's colder outside than the room, the room is
+    RISE_MIN_C or more above its lowest reading of the last 90 minutes and
+    hasn't fallen over the last RISE_WINDOW_MIN (30) minutes; otherwise None
+    (not decided). The windows get 10 minutes' slack, so a clock a moment past
+    the quarter-hour doesn't drop the oldest reading."""
+    window = _window(readings, now, INFER_WINDOW_MIN + 10)
+    recent = _window(readings, now, RISE_WINDOW_MIN + 10)[-3:]
+    if len(recent) < 3:
+        return None
+    latest = recent[-1]
+    low = min(window[:-1], key=lambda r: r.temp_c)
+    t_out = temp_at(forecast, now)
+    if (latest.temp_c - low.temp_c < RISE_MIN_C or t_out >= latest.temp_c
+            or latest.temp_c < recent[0].temp_c - NOT_FALLING_SLACK_C):
+        return None
+    hours = (latest.timestamp - low.timestamp).total_seconds() / 3600
+    expected = (t_out - low.temp_c) / params.tau_h
+    residual = (latest.temp_c - low.temp_c) / hours - expected
+    return HeatingInference(True, residual, residual * params.heat_loss_w_per_c * params.tau_h)
+
+
 def infer_heating(readings: list[Reading], forecast: list[ForecastPoint],
                   params: RoomParams, now: datetime) -> HeatingInference:
     """Is the heating on in this room at `now`? Pass one room's readings.
     heating_on is None if there aren't enough readings or it's too mild to tell."""
+    rising = clear_rise(readings, forecast, params, now)
+    if rising is not None:
+        return rising
     fit = slope_c_per_h(readings, now, INFER_WINDOW_MIN, INFER_MIN_READINGS)
     if fit is None:
         return HeatingInference(None, None, None)

@@ -20,7 +20,8 @@ def _dashboard(demo, when):
 def test_dashboard_json():
     demo = _demo()
     homes = _dashboard(demo, at(22, 21))
-    assert [h.home_id for h in homes] == ["margaret", "frank", "joan", "ray", "pat", "eileen"]
+    assert [h.home_id for h in homes] == ["margaret", "frank", "joan", "ray", "pat", "eileen",
+                                          "walter"]
     data = json.loads(json.dumps(api.to_jsonable(homes)))
     assert datetime.fromisoformat(data[0]["rooms"][0]["last_seen"]).tzinfo is not None
     ray = next(h for h in homes if h.home_id == "ray")
@@ -75,15 +76,28 @@ def test_demo_night_messages():
     def templates(home_id):
         return [m.template_id for _, m in sent if m.home_id == home_id]
 
-    # Margaret: one daytime check-in, its cost follow-up, no separate bedtime
-    assert templates("margaret") == ["daytime_checkin", "cost_followup", "morning"]
+    # Margaret: the family's heads-up, one daytime check-in, its cost
+    # follow-up, no separate bedtime; no morning message, as her heating went
+    # back on at 16°C
+    assert templates("margaret") == ["family_heads_up", "daytime_checkin", "cost_followup"]
+    # Walter: predicted to reach about 9°C. He gets the bedtime message, the
+    # family the heads-up at least 1.5 hours before his room is below 16°C
+    assert templates("walter") == ["bedtime", "family_heads_up", "morning"]
+    bedtime = next(m for _, m in sent if m.home_id == "walter" and m.template_id == "bedtime")
+    assert "about 9°C by morning" in bedtime.text
+    when, heads_up = next((w, m) for w, m in sent
+                          if m.home_id == "walter" and m.template_id == "family_heads_up")
+    assert "about 9°C" in heads_up.text
+    cross = datetime.combine(when.date(), datetime.strptime(
+        heads_up.text.split("by about ")[1][:5], "%H:%M").time(), tzinfo=when.tzinfo)
+    assert timedelta(hours=1, minutes=30) <= cross - when <= timedelta(hours=2)
     # Frank: nothing at all
     assert templates("frank") == []
     # Ray: the bedtime message from his last reading, then the family hears
     # the thermometers have gone quiet
     assert templates("ray") == ["bedtime", "no_reading"]
     # Eileen: one bedtime message (her heating went off at 20:00), one morning
-    assert templates("eileen") == ["bedtime", "morning"]
+    assert templates("eileen") == ["bedtime", "family_heads_up", "morning"]
     eileen_bedtime = next((when, m) for when, m in sent
                           if m.home_id == "eileen" and m.template_id == "bedtime")
     assert at(22, 20, 30) <= eileen_bedtime[0] < at(22, 22)
@@ -107,7 +121,8 @@ def test_escalation_when_no_reply():
             if message.home_id == "margaret":
                 steps.append((now, message.template_id))
         now += timedelta(minutes=15)
-    assert steps == [(at(22, 21), "daytime_checkin"), (at(22, 21, 30), "checkin_reminder"),
+    assert steps == [(at(22, 21), "daytime_checkin"), (at(22, 21), "family_heads_up"),
+                     (at(22, 21, 30), "checkin_reminder"),
                      (at(22, 22), "family_evening")]   # the family may get it at night
 
 
@@ -140,3 +155,24 @@ def test_habit_skips_bedtime():
     messages = api.pending_messages(at(22, 20, 30), [demo.homes[4]], demo.source,
                                     demo.forecast, usual)
     assert not any(m.template_id == "bedtime" for m in messages)
+
+
+def test_heads_up_only_before_it_gets_cold():
+    """The family's first ping looks 2 hours ahead. A room already below
+    16°C, or one whose heating is on, doesn't count."""
+    demo = _demo()
+    walter = next(h for h in demo.homes if h.home_id == "walter")
+    frank = next(h for h in demo.homes if h.home_id == "frank")
+
+    def crossing(home, now):
+        demo.clock.jump_to(now)
+        readings = {room: demo.source.get_history(home.home_id, room, now - timedelta(hours=3))
+                    for room in ("living", "bedroom")}
+        return api.heads_up_crossing(home, now, readings, demo.forecast)
+
+    assert crossing(walter, at(22, 17)) is None                 # warm, and 5 hours away
+    when, room = crossing(walter, at(22, 21))
+    assert room == "bedroom" and at(22, 21) <= when <= at(22, 23)
+    assert crossing(walter, at(23, 3)) is None                  # already far below 16°C
+    for hour in range(16, 22):
+        assert crossing(frank, at(22, hour)) is None            # heating on

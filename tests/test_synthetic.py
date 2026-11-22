@@ -1,9 +1,12 @@
 """Design doc §6 acceptance checks."""
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pytest
 
+from warmly.model import synthetic
 from warmly.model.forecast import load_fallback
+from warmly.model.homes import LONDON
+from warmly.model.predict import predict_now
 from warmly.model.synthetic import (build_demo_homes, demo_window, export_csv,
                                     generate_curves)
 from warmly.sources import SimClock, SyntheticSource
@@ -21,8 +24,10 @@ def _temp(readings, when):
     return next(r.temp_c for r in readings if r.timestamp == when)
 
 
-def test_margaret_worked_example():
-    """Part 1, constant -1°C forecast: 18.5°C at 17:00 -> 17.1 / 16.2 / 12.4°C."""
+def test_margaret_worked_example(monkeypatch):
+    """Part 1, constant -1°C forecast: 18.5°C at 17:00 -> 17.1 / 16.2 / 12.4°C.
+    The pure physics, so without her demo rescue (test_margaret_rescue)."""
+    monkeypatch.setattr(synthetic, "RESCUES", {})
     living = _curves(constant_forecast(-1.0, at(22, 15), hours=24))[("margaret", "living")]
     assert _temp(living, at(22, 17)) == pytest.approx(18.5, abs=0.2)
     assert _temp(living, at(22, 20)) == pytest.approx(17.1, abs=0.2)
@@ -31,6 +36,21 @@ def test_margaret_worked_example():
     # schedule turns it back on at 07:00 (test_margaret_regression checks the
     # 08:00 figure with the heating off). At 07:00: -1 + 19.5 e^(-14/40) = 12.7°C.
     assert _temp(living, at(23, 7)) == pytest.approx(12.7, abs=0.25)   # 12.74 + seeded noise
+
+
+def test_margaret_rescue():
+    """The demo night: the room in use (the bedroom from 22:00) falls to 16°C,
+    someone turns the heating back on, and it's above 18°C within the hour,
+    then stays warm until the morning."""
+    curves = _curves()
+    bedroom = curves[("margaret", "bedroom")]
+    in_night = [r for r in bedroom if at(22, 22) <= r.timestamp <= at(23, 10)]
+    lowest = min(in_night, key=lambda r: r.temp_c)
+    assert lowest.temp_c == pytest.approx(16.0, abs=0.2)
+    assert lowest.timestamp < at(22, 23)
+    back = next(r for r in in_night if r.timestamp > lowest.timestamp and r.temp_c >= 18.0)
+    assert back.timestamp - lowest.timestamp <= timedelta(hours=1)
+    assert all(r.temp_c >= 17.8 for r in in_night if r.timestamp >= back.timestamp)
 
 
 def test_acceptance():
@@ -124,3 +144,22 @@ def test_sim_clock_speed(monkeypatch):
     fake_now[0] += 5
     assert clock.now() == at(22, 18)
     assert clock.now() - at(22, 16) == timedelta(hours=2)
+
+
+@pytest.mark.parametrize("mode", ["offline", "cold"])
+def test_walter_reaches_nine_by_morning(mode):
+    """Walter's bedroom is tuned to tonight's forecast: about 9°C at 07:00
+    with the heating off overnight, and the model predicts the same."""
+    from warmly.model import api
+    forecast, _source, night_of = api.load_demo_forecast(mode)
+    demo = api.start_demo(forecast, night_of)
+    walter = next(h for h in demo.homes if h.home_id == "walter")
+    assert walter.rooms["bedroom"].tau_h >= 15
+    morning = datetime.combine(night_of + timedelta(days=1), time(7), tzinfo=LONDON)
+    bedroom = demo.source.curves[("walter", "bedroom")]
+    assert _temp(bedroom, morning - timedelta(minutes=15)) == pytest.approx(9.0, abs=0.5)
+    evening = datetime.combine(night_of, time(20, 30), tzinfo=LONDON)
+    demo.clock.jump_to(evening)
+    history = demo.source.get_history("walter", "bedroom", evening - timedelta(hours=3))
+    prediction = predict_now(walter, "bedroom", history, evening, forecast)
+    assert prediction.predicted_min_c == pytest.approx(9.0, abs=0.5)

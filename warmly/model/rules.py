@@ -53,7 +53,7 @@ def _is_night(when: datetime) -> bool:
 def night_alert_due(reading: Reading, opted_in: bool) -> bool:
     """Should the FAMILY be alerted about this overnight reading?
 
-    Between 22:00 and 07:00 Warmly never messages the person themselves.
+    Between 22:00 and 07:00 Heatify never messages the person themselves.
     The family is alerted only if they opted in and the room is below
     DANGER_FLOOR_C. A missing reading isn't an alert here; see
     sensor_offline_due().

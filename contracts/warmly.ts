@@ -1,4 +1,4 @@
-// Warmly API contract, version 1. Mirrors the Python dataclasses in warmly/model/api.py and
+// Heatify API contract, version 1. Mirrors the Python dataclasses in warmly/model/api.py and
 // warmly/model/types.py (DESIGN-predictive-model.md §4.11).
 // Server: Flask server.py on http://localhost:5000. All datetimes are ISO-8601 strings with offset.
 // If you change a field here, change the Python dataclass in the same commit (test_contract_keys checks it).
@@ -178,8 +178,10 @@ export interface SignUpRequest {
   epc_consent?: boolean;        // true = look the certificate up by postcode + address_line
   sensors?: SensorSignUp[];
   person_phone?: string;        // E.164, e.g. "+447700900001"
+  person_email?: string;        // check-ins go here (Resend)
   contact_name?: string;
   contact_phone?: string;
+  contact_email?: string;       // the family's alerts go here (Resend)
   relationship_word?: string;   // what the family calls them, e.g. "Mum"
   night_alerts_opted_in?: boolean;
 }
@@ -201,6 +203,8 @@ export interface SettingsRequest {
   night_alerts_opted_in?: boolean;
   person_phone?: string;
   contact_phone?: string;
+  person_email?: string;        // "" removes the address
+  contact_email?: string;
 }
 
 export interface SettingsResponse {
@@ -208,6 +212,7 @@ export interface SettingsResponse {
   relationship_word: string | null;
   night_alerts_opted_in: boolean | null;
   phones: { person?: string; contact?: string };
+  emails: { person?: string; contact?: string };
 }
 
 export const API_BASE = "http://localhost:5000";

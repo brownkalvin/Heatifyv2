@@ -116,6 +116,7 @@ def live(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "DB_PATH", tmp_path / "readings.db")
     monkeypatch.setattr(server, "PHONES", {})
     monkeypatch.setattr(server, "PHONE_TO_HOME", {})
+    monkeypatch.setattr(server, "EMAILS", {})
     clock = SimClock(at(22, 20))
     clock.pause()
     state = server.WarmlyServer(constant_forecast(-1.0, at(21, 0), hours=72), "live",
@@ -170,10 +171,41 @@ def test_settings(live):
     assert client.post("/api/homes", json=bad_sensor).status_code == 400
 
 
+def test_sign_up_emails(live):
+    """Email addresses from sign-up and settings go to emails.json, which the
+    Resend sender reads. A bad address is refused before anything is saved."""
+    client, state, data_dir = live
+    bad = client.post("/api/homes", json={**SIGN_UP, "contact_email": "alex at example"})
+    assert bad.status_code == 400 and "email" in bad.get_json()["error"]
+    assert state.records == {} and not (data_dir / "homes.json").exists()
+
+    created = client.post("/api/homes", json={**SIGN_UP, "person_email": " sam@example.com ",
+                                              "contact_email": "alex@example.co.uk"})
+    assert created.status_code == 201
+    expected = {"person": "sam@example.com", "contact": "alex@example.co.uk"}
+    assert server.EMAILS["sam"] == expected
+    assert json.loads((data_dir / "emails.json").read_text())["sam"] == expected
+
+    # Settings: change one, remove the other with "", refuse a bad one
+    updated = client.post("/api/homes/sam/settings",
+                          json={"contact_email": "alex2@example.com", "person_email": ""})
+    assert updated.get_json()["emails"] == {"contact": "alex2@example.com"}
+    refused = client.post("/api/homes/sam/settings", json={"contact_email": "nope"})
+    assert refused.status_code == 400
+    assert server.EMAILS["sam"] == {"contact": "alex2@example.com"}
+
+
+@pytest.mark.parametrize("address", ["a@b", "@example.com", "a b@example.com", "a@@b.com", "a@.com"])
+def test_check_email_refuses(address):
+    with pytest.raises(ValueError):
+        server.check_email(address)
+
+
 def test_demo_settings_survive_reset(tmp_path, monkeypatch):
     from warmly.model.forecast import load_fallback
     monkeypatch.setattr(server, "PHONES", {})
     monkeypatch.setattr(server, "PHONE_TO_HOME", {})
+    monkeypatch.setattr(server, "EMAILS", {})
     state = server.WarmlyServer(load_fallback(date(2026, 11, 22)), "fallback", date(2026, 11, 22),
                                 data_dir=tmp_path)
     client = server.create_app(state, ticker=False).test_client()
@@ -184,7 +216,7 @@ def test_demo_settings_survive_reset(tmp_path, monkeypatch):
     assert state.convo["margaret"].night_alerts_opted_in
     # Signing up during the demo saves the home for live mode, without changing the demo
     response = client.post("/api/homes", json=SIGN_UP).get_json()
-    assert response["live"] is False and len(state.homes) == 6
+    assert response["live"] is False and len(state.homes) == 7
 
 
 def test_signup_lookup_needs_consent(live, monkeypatch):

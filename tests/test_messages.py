@@ -11,7 +11,7 @@ SAMPLE = {
     "reason": "They haven't answered our check-in.",
     "summary": "Bedroom below 18°C for 2+ hours on 4 of 7 nights (lowest 11.6°C)",
     "answered": 5, "asked": 7, "thermometers": "living room and bedroom thermometers",
-    "last_seen": "18:45",
+    "last_seen": "18:45", "room": "bedroom",
 }
 
 

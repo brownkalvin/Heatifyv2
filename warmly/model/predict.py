@@ -73,7 +73,7 @@ def scenario_schedule(home: HomeProfile, room: Room, scenario: str,
     - warm_1h_before_bed:    heat to 19°C from BEDTIME - 1 h to BEDTIME, then off
     - as_scheduled:          the home's synthetic schedule (demo and tests only)
 
-    There's no "low" setpoint below 18°C on purpose: Warmly never
+    There's no "low" setpoint below 18°C on purpose: Heatify never
     recommends a bedroom below 18°C.
     """
     if scenario == "off":
@@ -170,7 +170,7 @@ def predict_crossing(home: HomeProfile, room: Room, now: datetime, t_now: float,
     """When will this room first drop below 18°C in the next `horizon_h`
     hours if the heating stays off? None if it won't, or if it's already
     below. This is the "predicted to fall below 18°C at 18:45" on the
-    dashboard: Warmly predicts before it gets cold (design doc §4.9)."""
+    dashboard: Heatify predicts before it gets cold (design doc §4.9)."""
     if t_now < TARGET_C:
         return None
     sim = simulate(t_now, now, now + timedelta(hours=horizon_h), home.rooms[room], [], forecast)

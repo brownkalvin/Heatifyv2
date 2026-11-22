@@ -33,7 +33,7 @@ def test_dashboard_shape(app_and_state):
     client, _ = app_and_state
     data = client.get("/api/dashboard").get_json()
     assert data["api_version"] == "1"
-    assert len(data["homes"]) == 6
+    assert len(data["homes"]) == 7
     assert datetime.fromisoformat(data["sim_time"]) == at(22, 16)
     assert "T" in data["sim_time"] and data["sim_time"].endswith("+00:00")
     assert data["clock"] == {"running": False, "paused_for_message": False, "speed": 720}
@@ -55,7 +55,9 @@ def test_contract_keys(app_and_state):
         assert set(home["week"][0]) == _ts_fields("NightOutlook")
 
 
-def test_reply_resumes_clock(app_and_state):
+def test_reply_resumes_clock(app_and_state, monkeypatch):
+    """With PAUSE_FOR_MESSAGES on, a message stops the clock and a reply restarts it."""
+    monkeypatch.setattr(server, "PAUSE_FOR_MESSAGES", True)
     client, state = app_and_state
     client.post("/api/clock", json={"action": "jump", "to": at(22, 21).isoformat()})
     client.post("/api/clock", json={"action": "play"})
@@ -107,27 +109,24 @@ def test_reading_endpoint(app_and_state):
         assert conn.execute("SELECT sensor_id, temp_c FROM readings").fetchall() == [("esp-1", 17.4)]
 
 
-def test_sms_reply(app_and_state, monkeypatch):
-    client, state = app_and_state
-    monkeypatch.setitem(server.PHONE_TO_HOME, "+447700900001", "margaret")
-    response = client.post("/sms/reply", data={"From": "+447700900001", "Body": "1"})
-    assert response.mimetype == "text/xml" and b"<Response/>" in response.data
-    assert state.convo["margaret"].last_reply == "1"
-
-
-def _twilio_env(monkeypatch):
-    for key, value in (("TWILIO_ACCOUNT_SID", "AC123"), ("TWILIO_AUTH_TOKEN", "tok"),
-                       ("TWILIO_FROM", "+447700900000")):
-        monkeypatch.setenv(key, value)
-
-
 def _message(to="person"):
     return server.api.OutgoingMessage("margaret", to, "t1", "Are you warm enough?", "test")
 
 
-def test_send_sms_posts_to_twilio(monkeypatch):
-    _twilio_env(monkeypatch)
-    monkeypatch.setitem(server.PHONES, "margaret", {"person": "+447700900001"})
+def test_load_phones(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "PHONES", {})
+    monkeypatch.setattr(server, "PHONE_TO_HOME", {})
+    path = tmp_path / "phones.json"
+    path.write_text('{"frank": {"person": "+447700900002", "contact": "+447700900102"}}')
+    server.load_phones(path)
+    assert server.PHONE_TO_HOME == {"+447700900002": "frank"}
+    assert server.PHONES["frank"]["contact"] == "+447700900102"
+
+
+def test_send_email_posts_to_resend(monkeypatch):
+    monkeypatch.setenv("RESEND_API_KEY", "re_test")
+    monkeypatch.delenv("RESEND_FROM", raising=False)
+    monkeypatch.setitem(server.EMAILS, "margaret", {"contact": "son@example.com"})
     calls = []
 
     class Thread:
@@ -139,30 +138,28 @@ def test_send_sms_posts_to_twilio(monkeypatch):
 
     monkeypatch.setattr(server.threading, "Thread", Thread)
     monkeypatch.setattr(server.requests, "post",
-                        lambda url, **kw: calls.append((url, kw)) or type("R", (), {"status_code": 201})())
-    server.send_sms(_message())
+                        lambda url, **kw: calls.append((url, kw)) or type("R", (), {"status_code": 200})())
+    server.send_email(_message("contact"))
+    server.send_email(_message("person"))            # no person address: skipped
+    assert len(calls) == 1
     url, kw = calls[0]
-    assert url.endswith("/Accounts/AC123/Messages.json")
-    assert kw["auth"] == ("AC123", "tok")
-    assert kw["data"] == {"To": "+447700900001", "From": "+447700900000",
-                          "Body": "Are you warm enough?"}
+    assert url == server.RESEND_URL
+    assert kw["headers"]["Authorization"] == "Bearer re_test"
+    assert kw["json"]["to"] == ["son@example.com"]
+    assert kw["json"]["from"] == server.RESEND_DEFAULT_FROM
+    assert kw["json"]["text"] == "Are you warm enough?"
 
 
-def test_send_sms_skips_without_config_or_number(monkeypatch):
-    monkeypatch.setattr(server.requests, "post", lambda *a, **k: pytest.fail("posted"))
-    for key in server.TWILIO_KEYS:
-        monkeypatch.delenv(key, raising=False)
-    server.send_sms(_message())                      # no Twilio config
-    _twilio_env(monkeypatch)
-    monkeypatch.setitem(server.PHONES, "margaret", {"person": "+447700900001"})
-    server.send_sms(_message("contact"))             # no contact number
-
-
-def test_load_phones(tmp_path, monkeypatch):
-    monkeypatch.setattr(server, "PHONES", {})
-    monkeypatch.setattr(server, "PHONE_TO_HOME", {})
-    path = tmp_path / "phones.json"
-    path.write_text('{"frank": {"person": "+447700900002", "contact": "+447700900102"}}')
-    server.load_phones(path)
-    assert server.PHONE_TO_HOME == {"+447700900002": "frank"}
-    assert server.PHONES["frank"]["contact"] == "+447700900102"
+def test_demo_keeps_running_after_a_message(app_and_state):
+    """By default the demo clock keeps going when a message goes to the person,
+    and a reply still reaches the conversation."""
+    client, state = app_and_state
+    client.post("/api/clock", json={"action": "jump", "to": at(22, 21).isoformat()})
+    client.post("/api/clock", json={"action": "play"})
+    state.tick()                                     # Margaret's check-in is due at 21:00
+    demo = client.get("/api/family/margaret/demo").get_json()
+    assert demo["clock"]["running"] and not demo["clock"]["paused_for_message"]
+    assert demo["awaiting_reply"] == "daytime_checkin"
+    client.post("/api/reply", json={"home_id": "margaret", "text": "1"})
+    assert state.convo["margaret"].last_reply == "1"
+    assert state.convo["margaret"].awaiting_reply is None

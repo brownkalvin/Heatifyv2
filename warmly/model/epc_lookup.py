@@ -145,7 +145,7 @@ def _property_type(cert: dict) -> str:
 
 
 def epc_to_profile_fields(cert: dict) -> dict:
-    """The only fields Warmly keeps from a certificate:
+    """The only fields Heatify keeps from a certificate:
     {"sap_score": int, "epc_band": str, "property_type": str,
      "floor_area_m2": float, "lodged": date}"""
     cert = cert.get("data", cert)   # accept the whole response or just "data"

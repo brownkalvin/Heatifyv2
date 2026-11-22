@@ -1,4 +1,4 @@
-"""Presets and thresholds: the ONLY place for Warmly's constants.
+"""Presets and thresholds: the ONLY place for Heatify's constants.
 
 The numbers are rough guesses, tuned so the model's outputs land near the
 pitch figures. Edit them here and nowhere else.
@@ -19,6 +19,8 @@ DAYTIME_WINDOW = (time(7), time(22))
 BEDTIME_CHECK = time(20, 30)
 BEDTIME = time(22, 0)           # assumed bedtime for scenarios and the weekly outlook
 NIGHT_WINDOW = (time(22), time(7))
+HEADS_UP_C = 16.0               # the family's first ping: the room in use will drop below
+HEADS_UP_H = 2.0                # this within this many hours if the heating stays off
 
 # Daytime check-in and slope (design doc §4.3)
 CHECK_IN_AFTER_H = 2.0          # below 18°C for at least this long...
@@ -31,6 +33,8 @@ MISSING_LIMIT = 0.5             # more than half the readings missing = "no read
 INFER_WINDOW_MIN = 90           # heating inference looks at the last 90 minutes...
 INFER_MIN_READINGS = 6          # ...from at least this many readings
 SLOPE_SE_FLOOR = 0.05           # never trust a slope's standard error below this (°C/h)
+RISE_WINDOW_MIN = 30            # a room that warmed by RISE_MIN_C in the last 30 minutes,
+RISE_MIN_C = 0.5                # on a night colder than the room, has its heating on
 USUALLY_ON_NIGHTS = 5           # "heating usually on at night" = on for 5+ of the last 7 known nights
 
 # Weekly outlook (design doc §4.3): rough forecast error, by days ahead

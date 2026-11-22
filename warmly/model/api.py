@@ -22,7 +22,8 @@ from .forecast import (OXFORD_LATLON, freezing_tonight, get_cold_night, get_hist
                        tonight)
 from .calibrate import learn_tau, params_with_fitted_tau
 from .epc_lookup import certificate_is_old, epc_to_profile_fields, find_epc
-from .homes import (BEDTIME, BEDTIME_CHECK, COST_CARD_UNTIL, DAYTIME_WINDOW,
+from .homes import (BEDTIME, BEDTIME_CHECK, COST_CARD_UNTIL, DAYTIME_WINDOW, HEADS_UP_C,
+                    HEADS_UP_H, STALE_AFTER_MIN,
                     INFER_WINDOW_MIN, LONDON, PROPERTY_TYPES, REPLY_TIMEOUT_MIN, TARGET_C,
                     WEEKLY_SUMMARY_WEEKDAY, build_home)
 from .infer_heating import heating_habit, infer_heating, label_night
@@ -33,7 +34,7 @@ from .room_model import simulate
 from .rules import (bedtime_message_due, daytime_check_due, morning_check_due, night_alert_due,
                     one_conversation_per_evening, room_in_use, sensor_offline_due,
                     status_colour, weekly_summary)
-from .synthetic import build_demo_homes, demo_window, export_csv
+from .synthetic import build_demo_homes, demo_beats, demo_window, export_csv, tune_to_forecast
 from .types import (CostCard, ForecastPoint, HomeProfile, NightOutlook, OvernightPrediction,
                     Reading, Room, RoomParams)
 
@@ -120,6 +121,8 @@ class DemoNight:
     source: SyntheticSource
     start: datetime
     end: datetime
+    # home_id -> [(time, what happens)], for the app's notes (synthetic.demo_beats)
+    beats: dict[str, list[tuple[datetime, str]]] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -165,8 +168,11 @@ def start_demo(forecast: list[ForecastPoint], night_of: date, speed: float = 720
     clock.pause()
     clock.jump_to(start)        # exactly 16:00, not 16:00 plus setup time
     history_start = start - timedelta(minutes=INFER_WINDOW_MIN)
+    tune_to_forecast(homes, forecast, history_start, night_of)   # Walter: 9°C by 07:00
     source = SyntheticSource(homes, forecast, clock, history_start, end)
-    return DemoNight(night_of, homes, forecast, clock, source, start, end)
+    beats = {home.home_id: demo_beats(home, forecast, start, end, history_start)
+             for home in homes}
+    return DemoNight(night_of, homes, forecast, clock, source, start, end, beats)
 
 
 def export_demo_readings(demo: DemoNight, path=None):
@@ -427,12 +433,53 @@ def _person_message(home: HomeProfile, convo: ConversationState, now: datetime,
     return None
 
 
+def heads_up_crossing(home: HomeProfile, now: datetime, readings: dict[Room, list[Reading]],
+                      forecast: list[ForecastPoint]) -> tuple[datetime, Room] | None:
+    """When the room in use will first be below HEADS_UP_C (16°C) within the
+    next HEADS_UP_H (2) hours if the heating stays off: (time, room), or None.
+    "In use" at that time: rules.room_in_use (the bedroom from 22:00). Each
+    room starts from its latest real reading. Left out: a room with no recent
+    reading, one whose heating is clearly on, and one that's already below
+    16°C (that's not a heads-up any more; the app's live alert covers it)."""
+    end = now + timedelta(hours=HEADS_UP_H)
+    curves = {}
+    for room in ROOMS:
+        recent = [r for r in readings[room] if r.temp_c is not None and r.timestamp <= now
+                  and now - r.timestamp <= timedelta(minutes=STALE_AFTER_MIN)]
+        if not recent or recent[-1].temp_c < HEADS_UP_C:
+            continue
+        if infer_heating(readings[room], forecast, home.rooms[room], now).heating_on is True:
+            continue
+        latest = recent[-1]
+        curves[room] = simulate(latest.temp_c, latest.timestamp, end, home.rooms[room], [],
+                                forecast)
+    crossings = [(when, room) for room, curve in curves.items() for when, temp, _ in curve
+                 if when >= now - timedelta(minutes=15) and room_in_use(when) == room
+                 and temp < HEADS_UP_C]
+    return min(crossings) if crossings else None
+
+
 def _contact_messages(home: HomeProfile, convo: ConversationState, now: datetime,
-                      readings: dict[Room, list[Reading]]) -> list[OutgoingMessage]:
-    """Messages to the family that don't depend on the person replying:
-    a silent thermometer, and (if opted in) a very cold bedroom at night."""
+                      readings: dict[Room, list[Reading]],
+                      forecast: list[ForecastPoint]) -> list[OutgoingMessage]:
+    """Messages to the family that don't depend on the person replying: the
+    first ping (the room in use will be below 16°C within 2 hours), a silent
+    thermometer, and (if opted in) a very cold bedroom at night."""
     messages = []
     name = convo.relationship_word or home.name
+
+    # The first ping: as soon as the heating-off projection of the room in
+    # use goes below HEADS_UP_C within HEADS_UP_H hours. At most every 12 hours.
+    if not _sent_since(convo, {"family_heads_up"}, now - timedelta(hours=12)):
+        crossing = heads_up_crossing(home, now, readings, forecast)
+        if crossing:
+            when, room = crossing
+            tonight_low = predict_now(home, "bedroom", readings["bedroom"], now, forecast)
+            messages.append(OutgoingMessage(home.home_id, "contact", "family_heads_up", render(
+                "family_heads_up", name=name, room=ROOM_NAMES[room],
+                cross_time=f"{max(when, now):%H:%M}",
+                pred_min=display_temp(tonight_low.predicted_min_c)),
+                f"heads-up: {room} below {HEADS_UP_C:g}°C by {when:%H:%M} if the heating stays off"))
 
     silent = {}
     for room in ROOMS:
@@ -505,7 +552,7 @@ def pending_messages(now: datetime, homes: list[HomeProfile], source: ReadingSou
             message = _person_message(home, state, now, readings, forecast, card)
             if message:
                 due.append(message)
-        due.extend(_contact_messages(home, state, now, readings))
+        due.extend(_contact_messages(home, state, now, readings, forecast))
         weekly = _weekly_message(home, state, now, source)
         if weekly:
             due.append(weekly)
